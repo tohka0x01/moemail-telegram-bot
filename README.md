@@ -1,6 +1,7 @@
 # Telegram 临时邮箱机器人 - 部署说明
 
-这是一个基于 Cloudflare Workers 的 Telegram 机器人，提供临时邮箱管理服务，支持创建、查看、删除临时邮箱，并提供实时邮件通知功能。
+这是一个基于 Cloudflare Workers 的 Telegram 机器人， 提供临时邮箱管理服务，支持创建、查看、删除临时邮箱，并提供实时邮件通知功能。
+邮箱服务基于[Moemail](https://github.com/beilunyang/moemail)。
 
 ## 🚀 主要功能
 
@@ -25,7 +26,6 @@
 
 - `telegram-bot.js` - 主程序文件（生产环境使用）
 - `api.md` - API 接口文档
-- `telegram-bot.ts` - TypeScript 版本（仅供参考）
 
 ## 🛠️ 部署步骤
 
