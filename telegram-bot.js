@@ -1,44 +1,271 @@
-// Cloudflare Workers Telegram Bot for Temporary Email Management
-// 简化版单文件实现 - JavaScript版本
-
-export default {
-  async fetch(request, env) {
-    const url = new URL(request.url);
-    
-    // 处理 Telegram Webhook - 同时处理Telegram消息和邮件通知
-    if (request.method === 'POST' && url.pathname === '/telegram-webhook') {
-      const webhookEvent = request.headers.get('X-Webhook-Event');
-      
-      if (webhookEvent === 'new_message') {
-        // 处理邮件通知
-        const emailData = await request.json();
-        await handleEmailWebhook(emailData, env, request);
-      } else {
-        // 处理Telegram消息
-        const update = await request.json();
-        await handleUpdate(update, env);
-      }
-      
-      return new Response('OK');
-    }
-    
-    // 健康检查
-    if (request.method === 'GET' && url.pathname === '/health') {
-      return new Response('OK');
-    }
-    
-
-    
-    // 邮件查看页面
-    const viewMatch = url.pathname.match(/^\/view\/(\d+)\/([^\/]+)\/([^\/]+)$/);
-    if (request.method === 'GET' && viewMatch) {
-      const [, userId, emailId, messageId] = viewMatch;
-      return await handleEmailView(parseInt(userId), emailId, messageId, env);
-    }
-    
-    return new Response('Not Found', { status: 404 });
+// 验证码提取默认配置
+const DEFAULT_CODE_DETECTION_CONFIG = {
+  minLength: 4,
+  maxLength: 10,
+  contextWindow: 40,
+  scoreThreshold: 2,
+  positiveKeywords: {
+    zh: ['验证码', '动态码', '登录', '安全验证', '校验码', '一次性密码'],
+    en: ['verification', 'verify', 'code', 'otp', 'passcode', '2fa', 'login', 'security', 'auth', 'authentication']
   },
+  negativeKeywords: ['订单', '金额', '电话', 'phone', 'customer', 'invoice', 'order', 'tracking', 'amount', 'tel'],
+  patterns: [
+    { name: 'numeric', regex: /(?:^|[^0-9A-Za-z])((?:\d[\s-]?){4,8})(?=[^0-9A-Za-z]|$)/g, group: 1 },
+    { name: 'alphanumUpper', regex: /(?:^|[^0-9A-Za-z])([A-Z0-9][A-Z0-9\s-]{3,9}[A-Z0-9])(?=[^0-9A-Za-z]|$)/g, group: 1 },
+    { name: 'alphanumMixed', regex: /(?:^|[^0-9A-Za-z])([A-Za-z0-9][A-Za-z0-9\s-]{3,9}[A-Za-z0-9])(?=[^0-9A-Za-z]|$)/g, group: 1 },
+    { name: 'wrapped', regex: /[【\(\[\{]([A-Za-z0-9][A-Za-z0-9\s-]{3,9}[A-Za-z0-9])[】\)\]\}]/g, group: 1 }
+  ]
 };
+
+// 将逗号分隔的字符串解析为数组
+function parseKeywordList(rawValue) {
+  if (!rawValue || typeof rawValue !== 'string') {
+    return null;
+  }
+  const list = rawValue.split(',').map(item => item.trim()).filter(Boolean);
+  return list.length > 0 ? list : null;
+}
+
+// 合并中英文关键词
+function mergeKeywordConfig(target, overrides) {
+  if (!overrides || typeof overrides !== 'object') return;
+  if (Array.isArray(overrides.zh) && overrides.zh.length > 0) {
+    target.zh = overrides.zh;
+  }
+  if (Array.isArray(overrides.en) && overrides.en.length > 0) {
+    target.en = overrides.en;
+  }
+}
+
+// 构建验证码提取配置（支持环境变量覆盖）
+function buildVerificationConfig(env) {
+  const config = JSON.parse(JSON.stringify(DEFAULT_CODE_DETECTION_CONFIG));
+  if (!env) {
+    return config;
+  }
+
+  if (env.CODE_DETECTION_CONFIG_JSON) {
+    try {
+      const overrides = JSON.parse(env.CODE_DETECTION_CONFIG_JSON);
+      if (overrides && typeof overrides === 'object') {
+        if (typeof overrides.minLength === 'number') config.minLength = overrides.minLength;
+        if (typeof overrides.maxLength === 'number') config.maxLength = overrides.maxLength;
+        if (typeof overrides.contextWindow === 'number') config.contextWindow = overrides.contextWindow;
+        if (typeof overrides.scoreThreshold === 'number') config.scoreThreshold = overrides.scoreThreshold;
+        if (overrides.positiveKeywords) {
+          mergeKeywordConfig(config.positiveKeywords, overrides.positiveKeywords);
+        }
+        if (Array.isArray(overrides.negativeKeywords) && overrides.negativeKeywords.length > 0) {
+          config.negativeKeywords = overrides.negativeKeywords;
+        }
+      }
+    } catch (error) {
+      console.error('解析 CODE_DETECTION_CONFIG_JSON 失败:', error);
+    }
+  }
+
+  const minLength = parseInt(env.CODE_MIN_LENGTH, 10);
+  if (!Number.isNaN(minLength) && minLength > 0) {
+    config.minLength = minLength;
+  }
+
+  const maxLength = parseInt(env.CODE_MAX_LENGTH, 10);
+  if (!Number.isNaN(maxLength) && maxLength >= config.minLength) {
+    config.maxLength = maxLength;
+  }
+
+  const contextWindow = parseInt(env.CODE_CONTEXT_WINDOW, 10);
+  if (!Number.isNaN(contextWindow) && contextWindow >= 0) {
+    config.contextWindow = contextWindow;
+  }
+
+  const scoreThreshold = parseInt(env.CODE_SCORE_THRESHOLD, 10);
+  if (!Number.isNaN(scoreThreshold)) {
+    config.scoreThreshold = scoreThreshold;
+  }
+
+  const zhKeywords = parseKeywordList(env.CODE_POSITIVE_KEYWORDS_ZH);
+  if (zhKeywords) {
+    config.positiveKeywords.zh = zhKeywords;
+  }
+
+  const enKeywords = parseKeywordList(env.CODE_POSITIVE_KEYWORDS_EN);
+  if (enKeywords) {
+    config.positiveKeywords.en = enKeywords;
+  }
+
+  const negativeKeywords = parseKeywordList(env.CODE_NEGATIVE_KEYWORDS);
+  if (negativeKeywords) {
+    config.negativeKeywords = negativeKeywords;
+  }
+
+  return config;
+}
+
+
+// 将 HTML 实体转为普通字符
+function decodeHtmlEntities(input) {
+  if (!input) {
+    return '';
+  }
+  const entities = {
+    '&nbsp;': ' ',
+    '&lt;': '<',
+    '&gt;': '>',
+    '&amp;': '&',
+    '&quot;': '"',
+    '&#39;': "'"
+  };
+  return input.replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z]+);/g, (_, entity) => {
+    const lower = entity.toLowerCase();
+    if (entities[`&${lower};`]) {
+      return entities[`&${lower};`];
+    }
+    if (lower.startsWith('#x')) {
+      const codePoint = parseInt(lower.slice(2), 16);
+      if (!Number.isNaN(codePoint)) {
+        return String.fromCodePoint(codePoint);
+      }
+    } else if (lower.startsWith('#')) {
+      const codePoint = parseInt(lower.slice(1), 10);
+      if (!Number.isNaN(codePoint)) {
+        return String.fromCodePoint(codePoint);
+      }
+    }
+    return entities[`&${entity};`] || '';
+  });
+}
+
+// 对邮件内容做预处理，输出纯文本
+function preprocessEmailContent(rawContent) {
+  if (!rawContent) {
+    return { text: '', lowerText: '' };
+  }
+  let text = rawContent
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<[^>]*?>/g, ' ');
+  text = decodeHtmlEntities(text);
+  text = text.replace(/[\u00A0\s]+/g, ' ').trim();
+  return { text, lowerText: text.toLowerCase() };
+}
+
+// 计算关键词得分，支持中英文列表
+function calculateKeywordScore(text, keywordList, weight = 1, isLowerCase = false) {
+  if (!text || !Array.isArray(keywordList) || keywordList.length === 0) {
+    return 0;
+  }
+  const target = isLowerCase ? text.toLowerCase() : text;
+  return keywordList.reduce((score, keyword) => {
+    if (!keyword) return score;
+    const key = isLowerCase ? keyword.toLowerCase() : keyword;
+    return target.includes(key) ? score + weight : score;
+  }, 0);
+}
+
+// 提取验证码候选集合
+function extractVerificationCodes(subject = '', rawContent = '', config = DEFAULT_CODE_DETECTION_CONFIG) {
+  const resultMap = new Map();
+  const { text, lowerText } = preprocessEmailContent(rawContent);
+  const subjectLower = (subject || '').toLowerCase();
+  const positiveZh = config.positiveKeywords?.zh || [];
+  const positiveEn = config.positiveKeywords?.en || [];
+  const negativeKeywords = config.negativeKeywords || [];
+  const subjectPositiveScore =
+    calculateKeywordScore(subject, positiveZh, 1, false) +
+    calculateKeywordScore(subjectLower, positiveEn, 1, true) -
+    calculateKeywordScore(subjectLower, negativeKeywords, 1, true);
+  for (const pattern of config.patterns || []) {
+    const regex = pattern.regex;
+    regex.lastIndex = 0;
+    for (const match of text.matchAll(regex)) {
+      const matchedText = pattern.group ? match[pattern.group] : match[0];
+      if (!matchedText) continue;
+      let candidateText = matchedText.trim().replace(/\s+/g, ' ');
+      const firstDigitPos = candidateText.search(/\d/);
+      if (firstDigitPos > 0) {
+        const spaceIndex = candidateText.lastIndexOf(' ', firstDigitPos);
+        if (spaceIndex !== -1) {
+          candidateText = candidateText.slice(spaceIndex + 1);
+        }
+      }
+      candidateText = candidateText.replace(/[^\dA-Za-z]+$/g, '');
+      const lastDigitPos = candidateText.search(/\d(?!.*\d)/);
+      if (lastDigitPos !== -1) {
+        const suffix = candidateText.slice(lastDigitPos + 1);
+        if (suffix && !/\d/.test(suffix)) {
+          candidateText = candidateText.slice(0, lastDigitPos + 1);
+        }
+      }
+      const normalized = candidateText.replace(/[^A-Za-z0-9]/g, '');
+      if (normalized.length < config.minLength || normalized.length > config.maxLength) {
+        continue;
+      }
+      if (!/\d/.test(normalized)) {
+        continue;
+      }
+      const key = normalized.toUpperCase();
+      const startIndex = match.index ?? text.indexOf(matchedText);
+      const effectiveIndex = startIndex < 0 ? 0 : startIndex;
+      const contextStart = Math.max(0, effectiveIndex - config.contextWindow);
+      const contextEnd = Math.min(text.length, effectiveIndex + matchedText.length + config.contextWindow);
+      const context = text.slice(contextStart, contextEnd);
+      const contextLower = lowerText.slice(contextStart, contextEnd);
+      let score = 0;
+      score += calculateKeywordScore(context, positiveZh, 2, false);
+      score += calculateKeywordScore(contextLower, positiveEn, 2, true);
+      score -= calculateKeywordScore(contextLower, negativeKeywords, 2, true);
+      if (/[A-Za-z]/.test(normalized)) {
+        score += 1;
+      }
+      const existing = resultMap.get(key) || {
+        code: normalized,
+        displayCode: normalized,
+        score: 0,
+        contexts: [],
+        patterns: new Set()
+      };
+      existing.score += score;
+      existing.contexts.push(context.trim());
+      existing.patterns.add(pattern.name);
+      resultMap.set(key, existing);
+    }
+  }
+  const candidates = Array.from(resultMap.values()).map(item => {
+    const displayCode = /[A-Za-z]/.test(item.code) ? item.code.toUpperCase() : item.code;
+    const totalScore = item.score + subjectPositiveScore;
+    return {
+      code: item.code,
+      displayCode,
+      score: totalScore,
+      contexts: item.contexts,
+      patterns: Array.from(item.patterns)
+    };
+  }).sort((a, b) => b.score - a.score);
+  const highConfidence = [];
+  const lowConfidence = [];
+  const debug = candidates.map(candidate => ({
+    code: candidate.displayCode,
+    score: candidate.score,
+    patterns: candidate.patterns,
+    contexts: candidate.contexts
+  }));
+  for (const candidate of candidates) {
+    if (!candidate.displayCode) continue;
+    if (candidate.score >= config.scoreThreshold) {
+      highConfidence.push(candidate.displayCode);
+    } else {
+      lowConfidence.push(candidate.displayCode);
+    }
+  }
+  return {
+    highConfidence,
+    lowConfidence,
+    debug
+  };
+}
 
 // 处理 Telegram 更新
 async function handleUpdate(update, env) {
@@ -832,30 +1059,41 @@ async function viewSingleMessage(chatId, userId, emailId, messageId, env) {
     // 提取纯文本内容
     let textContent = '';
     if (content) {
-      // 移除HTML标签，获取纯文本
-      textContent = content.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+      // 使用预处理函数提取纯文本
+      const { text: plainText } = preprocessEmailContent(content);
+      textContent = plainText;
       if (textContent.length > 1000) {
         textContent = textContent.substring(0, 1000) + '...';
       }
     }
-
     // 检测验证码
-    const codeMatches = content.match(/\b\d{4,8}\b/g) || [];
-    const verificationCodes = codeMatches.filter(code => code.length >= 4 && code.length <= 8);
-
+    const detectionConfig = buildVerificationConfig(env);
+    const extraction = extractVerificationCodes(subject, content, detectionConfig);
+    const verificationCodes = extraction.highConfidence || [];
+    const fallbackCodes = extraction.lowConfidence || [];
     let message = `📬 **邮件详情**\n\n`;
     message += `**主题：** ${subject}\n`;
     message += `**发件人：** ${fromAddress}\n`;
     message += `**时间：** ${receivedAt}\n\n`;
 
     if (verificationCodes.length > 0) {
-      message += '🔑 **检测到验证码：**\n';
+      message += '【验证码】**检测到以下结果：**\n';
       verificationCodes.slice(0, 3).forEach(code => {
-        message += `\`${code}\`\n`;
+        const wrapper = String.fromCharCode(96);
+        message += wrapper + code + wrapper + '\n';
       });
       message += '\n';
     }
 
+    const extraCandidates = fallbackCodes.filter(code => !verificationCodes.includes(code));
+    if (extraCandidates.length > 0) {
+      message += '【提示】以下候选置信度较低，请自行核实：\n';
+      extraCandidates.slice(0, 3).forEach(code => {
+        const wrapper = String.fromCharCode(96);
+        message += wrapper + code + wrapper + '\n';
+      });
+      message += '\n';
+    }
     if (textContent) {
       message += '📄 **内容预览：**\n';
       message += textContent + '\n\n';
@@ -1036,14 +1274,15 @@ async function handleEmailWebhook(emailData, env, request) {
     // 生成内容预览
     let preview = '';
     if (content) {
-      const cleanContent = content.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
-      preview = cleanContent.length > 150 ? cleanContent.substring(0, 150) + '...' : cleanContent;
+      const { text: cleanText } = preprocessEmailContent(content);
+      const normalizedPreview = cleanText.replace(/\s+/g, ' ').trim();
+      preview = normalizedPreview.length > 150 ? normalizedPreview.substring(0, 150) + '...' : normalizedPreview;
     }
-    
-    // 检测验证码
-    const codeMatches = content.match(/\b\d{4,8}\b/g) || [];
-    const verificationCodes = codeMatches.filter(code => code.length >= 4 && code.length <= 8);
-    
+    // �����֤��
+    const detectionConfig = buildVerificationConfig(env);
+    const extraction = extractVerificationCodes(subject, content, detectionConfig);
+    const verificationCodes = extraction.highConfidence || [];
+    const fallbackCodes = extraction.lowConfidence || [];
     // 检测是否为重要邮件
     const importantWords = ['验证码', 'verification', 'code', '登录', 'login'];
     const isImportant = importantWords.some(word => 
@@ -1069,15 +1308,25 @@ async function handleEmailWebhook(emailData, env, request) {
     }
     
     // 添加验证码信息
+    
+    // 添加内容预览
     if (verificationCodes.length > 0) {
       parts.push('');
-      parts.push('🔑 **检测到验证码：**');
+      parts.push('【验证码】**检测到以下结果：**');
       verificationCodes.slice(0, 3).forEach(code => {
         parts.push(`\`${code}\``);
       });
     }
-    
-    // 添加内容预览
+    const extraCandidates = fallbackCodes.filter(code => !verificationCodes.includes(code));
+    if (extraCandidates.length > 0) {
+      parts.push('');
+      parts.push('【提示】以下候选置信度较低，请自行核实：');
+      extraCandidates.slice(0, 3).forEach(code => {
+        const wrapper = String.fromCharCode(96);
+        parts.push(wrapper + code + wrapper);
+      });
+      parts.push('');
+    }
     if (preview) {
       parts.push('');
       parts.push('📄 **内容预览：**');
@@ -1121,3 +1370,7 @@ async function sendMessage(chatId, text, env, replyMarkup) {
     body: JSON.stringify(payload)
   });
 }
+
+
+export { DEFAULT_CODE_DETECTION_CONFIG, buildVerificationConfig, extractVerificationCodes, preprocessEmailContent };
+

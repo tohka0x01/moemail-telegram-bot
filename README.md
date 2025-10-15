@@ -14,6 +14,7 @@
 - ✅ **邮件查看**：支持在 Telegram 预览和 Web 完整查看
 - ✅ **分页支持**：大量邮箱和邮件的分页浏览
 - ✅ **域名动态获取**：自动从 API 获取可用域名
+- ✅ **验证码增强**：支持多种匹配模式、双语关键词与低置信度候选提示
 
 ### 高级特性
 - 🎲 **随机前缀生成**：支持随机和自定义邮箱前缀
@@ -73,6 +74,7 @@
 | `TELEGRAM_BOT_TOKEN` | `1234567890:ABCD...` | 你的 Telegram Bot Token |
 | `MOEMAIL_API_BASE_URL` | `https://api.example.com` | 邮件服务 API 基础地址 |
 
+> **提示**：可在 Variables 中额外新增 `CODE_*` 环境变量以调整验证码规则，详见 5.3 节。
 > ⚠️ **注意**：API 基础地址不要包含 `/api` 后缀
 
 #### 3.2 创建并绑定 KV 存储
@@ -137,6 +139,28 @@ curl "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getWebhookInfo"
 /create random 1d # 快速创建（随机前缀，1天有效期）
 /list             # 查看邮箱列表
 ```
+
+#### 5.3 验证码匹配配置（可选）
+通过环境变量即可调整验证码提取策略：
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `CODE_MIN_LENGTH` | 最短验证码长度 | 4 |
+| `CODE_MAX_LENGTH` | 最长验证码长度 | 10 |
+| `CODE_CONTEXT_WINDOW` | 上下文窗口长度（字符数） | 40 |
+| `CODE_SCORE_THRESHOLD` | 置信度阈值 | 2 |
+| `CODE_POSITIVE_KEYWORDS_ZH` | 中文正向关键词（逗号分隔） | 验证码,动态码,登录,安全验证,校验码,一次性密码 |
+| `CODE_POSITIVE_KEYWORDS_EN` | 英文正向关键词（逗号分隔） | verification,verify,code,otp,passcode,2fa,login,security,auth,authentication |
+| `CODE_NEGATIVE_KEYWORDS` | 负面关键词（逗号分隔） | 订单,金额,电话,phone,customer,invoice,order,tracking,amount,tel |
+| `CODE_DETECTION_CONFIG_JSON` | JSON 字符串（覆盖全部配置） | — |
+
+
+
+## 🧪 本地测试
+
+1. 安装 Node.js 18 及以上版本。
+2. 首次运行前执行 `npm install` 安装依赖。 
+3. 使用 `npm test` 验证验证码提取逻辑。 
 
 ## 📖 使用指南
 
