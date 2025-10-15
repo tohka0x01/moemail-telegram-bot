@@ -10,11 +10,10 @@
 - ✅ **多种有效期**：1小时、1天、7天、永久
 - ✅ **双创建模式**：交互式引导创建 + 快速命令创建
 - ✅ **实时邮件通知**：新邮件自动推送到 Telegram
-- ✅ **验证码识别**：自动检测和突出显示验证码
+- ✅ **验证码识别**：利用AI自动检测和突出显示验证码
 - ✅ **邮件查看**：支持在 Telegram 预览和 Web 完整查看
 - ✅ **分页支持**：大量邮箱和邮件的分页浏览
 - ✅ **域名动态获取**：自动从 API 获取可用域名
-- ✅ **验证码增强**：支持多种匹配模式、双语关键词与低置信度候选提示
 
 ### 高级特性
 - 🎲 **随机前缀生成**：支持随机和自定义邮箱前缀
@@ -26,7 +25,6 @@
 ## 📋 文件说明
 
 - `telegram-bot.js` - 主程序文件（生产环境使用）
-- `api.md` - API 接口文档
 
 ## 🛠️ 部署步骤
 
@@ -73,8 +71,11 @@
 |--------|-----|------|
 | `TELEGRAM_BOT_TOKEN` | `1234567890:ABCD...` | 你的 Telegram Bot Token |
 | `MOEMAIL_API_BASE_URL` | `https://api.example.com` | 邮件服务 API 基础地址 |
+| `OPENAI_API_KEY` | `sk-xxx` | 调用验证码提取模型所需的 API Key（必填以启用 AI 功能） |
+| `OPENAI_API_BASE_URL` | `https://api.openai.com/v1` | AI 模型接口的基础地址 |
+| `OPENAI_MODEL` | `glm-4.5` | 使用的验证码提取模型名称，可换成其他兼容模型 |
 
-> **提示**：可在 Variables 中额外新增 `CODE_*` 环境变量以调整验证码规则，详见 5.3 节。
+> **提示**：可在 Variables 中额外新增 `CODE_*` 环境变量调整验证码规则，详见 5.3 节。
 > ⚠️ **注意**：API 基础地址不要包含 `/api` 后缀
 
 #### 3.2 创建并绑定 KV 存储
@@ -153,6 +154,13 @@ curl "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getWebhookInfo"
 | `CODE_POSITIVE_KEYWORDS_EN` | 英文正向关键词（逗号分隔） | verification,verify,code,otp,passcode,2fa,login,security,auth,authentication |
 | `CODE_NEGATIVE_KEYWORDS` | 负面关键词（逗号分隔） | 订单,金额,电话,phone,customer,invoice,order,tracking,amount,tel |
 | `CODE_DETECTION_CONFIG_JSON` | JSON 字符串（覆盖全部配置） | — |
+
+### 5.4 AI 接口配置（GLM 思考模式）
+
+- Worker 在请求体中写死 `thinking: { type: "disabled" }`，用于关闭混合推理的思考模式，避免响应结果先返回 `thinking` 段落而影响验证码解析。
+- 若确实需要开启思考模式，可修改 `telegram-bot.js` 中 `requestPayload` 的 `thinking.type`，将其改为 `enabled`，同时留意响应解析逻辑是否仍然兼容。
+- 请确保你的聚合服务会透传 `thinking` 字段，并确认目标模型支持该参数；否则后端可能忽略或直接报错。
+- 模式切换后建议发送测试邮件，通过日志中的 `[AI] 请求详情` / `[AI] 响应详情` 检查实际生效情况。
 
 
 
